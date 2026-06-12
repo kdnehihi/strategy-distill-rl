@@ -51,6 +51,31 @@ def load_local_teacher(model_name: str):
     return tokenizer, model
 
 
+def load_vllm_teacher(
+    model_name: str,
+    tensor_parallel_size: int = 1,
+    gpu_memory_utilization: float = 0.9,
+    max_model_len: int | None = None,
+):
+    """Load a vLLM teacher plus tokenizer for prompt formatting."""
+    from transformers import AutoTokenizer
+    from vllm import LLM
+
+    validate_model_name(model_name)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    kwargs = {
+        "model": model_name,
+        "tensor_parallel_size": tensor_parallel_size,
+        "gpu_memory_utilization": gpu_memory_utilization,
+        "trust_remote_code": True,
+    }
+    if max_model_len is not None:
+        kwargs["max_model_len"] = max_model_len
+
+    return tokenizer, LLM(**kwargs)
+
+
 def format_prompt_for_model(tokenizer, prompt: str) -> str:
     """Use chat formatting when the tokenizer supports it."""
     if getattr(tokenizer, "chat_template", None):
@@ -64,19 +89,29 @@ def format_prompt_for_model(tokenizer, prompt: str) -> str:
     return prompt
 
 
-def generate_teacher_output(
+def format_prompts_for_model(tokenizer, prompts):
+    """Format a list of prompts for chat or base models."""
+    return [format_prompt_for_model(tokenizer, prompt) for prompt in prompts]
+
+
+def generate_teacher_outputs_hf(
     tokenizer,
     model,
-    prompt: str,
+    prompts,
     max_new_tokens: int = 512,
     temperature: float = 0.0,
-) -> str:
-    """Generate one teacher response for one prompt."""
+):
+    """Generate teacher responses for a batch using Hugging Face Transformers."""
     import torch
 
-    formatted_prompt = format_prompt_for_model(tokenizer, prompt)
-    device = next(model.parameters()).device
-    inputs = tokenizer(formatted_prompt, return_tensors="pt").to(device)
+    formatted_prompts = format_prompts_for_model(tokenizer, prompts)
+    tokenizer.padding_side = "left"
+    inputs = tokenizer(
+        formatted_prompts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+    ).to(next(model.parameters()).device)
 
     do_sample = temperature > 0
     generation_kwargs = {
@@ -91,5 +126,44 @@ def generate_teacher_output(
     with torch.no_grad():
         outputs = model.generate(**inputs, **generation_kwargs)
 
-    new_tokens = outputs[0][inputs["input_ids"].shape[-1] :]
-    return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+    prompt_len = inputs["input_ids"].shape[-1]
+    return [
+        tokenizer.decode(output_ids[prompt_len:], skip_special_tokens=True).strip()
+        for output_ids in outputs
+    ]
+
+
+def generate_teacher_outputs_vllm(
+    tokenizer,
+    llm,
+    prompts,
+    max_new_tokens: int = 512,
+    temperature: float = 0.0,
+):
+    """Generate teacher responses for a batch using vLLM."""
+    from vllm import SamplingParams
+
+    formatted_prompts = format_prompts_for_model(tokenizer, prompts)
+    sampling_params = SamplingParams(
+        temperature=temperature,
+        max_tokens=max_new_tokens,
+    )
+    outputs = llm.generate(formatted_prompts, sampling_params)
+    return [output.outputs[0].text.strip() for output in outputs]
+
+
+def generate_teacher_output(
+    tokenizer,
+    model,
+    prompt: str,
+    max_new_tokens: int = 512,
+    temperature: float = 0.0,
+) -> str:
+    """Generate one teacher response for one prompt."""
+    return generate_teacher_outputs_hf(
+        tokenizer=tokenizer,
+        model=model,
+        prompts=[prompt],
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+    )[0]
