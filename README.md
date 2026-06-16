@@ -56,9 +56,62 @@ To check teacher output formatting:
 python scripts/check_teacher_preview.py
 ```
 
+For the larger teacher dataset, run:
+
+```bash
+python scripts/validate_teacher_dataset.py --path data/gsm8k_teacher_preview_5000.jsonl
+```
+
+## Student Baseline and SFT
+
+Run a zero-shot student baseline first:
+
+```bash
+python scripts/evaluate_student.py \
+  --model-name Qwen/Qwen2.5-Math-1.5B-Instruct \
+  --input-path data/gsm8k_clean_test.jsonl \
+  --num-samples 100 \
+  --output-path runs/eval/qwen25_math_1p5b_zero_shot.jsonl \
+  --metrics-path runs/eval/qwen25_math_1p5b_zero_shot_metrics.json
+```
+
+Build SFT files from usable teacher traces:
+
+```bash
+python scripts/build_sft_dataset.py \
+  --teacher-path data/gsm8k_teacher_preview_5000.jsonl
+```
+
+Train a lightweight LoRA SFT adapter:
+
+```bash
+python scripts/train_sft_lora.py \
+  --model-name Qwen/Qwen2.5-Math-1.5B-Instruct \
+  --train-path data/sft_strategy_train.jsonl \
+  --val-path data/sft_strategy_val.jsonl \
+  --max-train-samples 300 \
+  --max-val-samples 100
+```
+
+Evaluate the trained adapter with the same evaluator:
+
+```bash
+python scripts/evaluate_student.py \
+  --model-name Qwen/Qwen2.5-Math-1.5B-Instruct \
+  --adapter-path checkpoints/qwen25_math_1p5b_strategy_lora \
+  --input-path data/gsm8k_clean_test.jsonl \
+  --num-samples 100 \
+  --output-path runs/eval/qwen25_math_1p5b_lora.jsonl \
+  --metrics-path runs/eval/qwen25_math_1p5b_lora_metrics.json
+```
+
+The same workflow is available as a notebook:
+
+- `notebooks/03_student_sft_experiments.ipynb`
+
 ## Current Scope
 
-This repository currently contains the Week 1 data scaffold plus a small local teacher preview script. It does not include full teacher dataset generation, SFT training, GRPO training, or complex abstractions.
+This repository currently contains the Week 1 data scaffold, teacher trace generation, teacher validation, zero-shot student evaluation, and lightweight LoRA SFT. It does not include GRPO/RLVR training or complex abstractions.
 
 ## Future Stages
 

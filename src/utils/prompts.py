@@ -55,3 +55,26 @@ def build_strategy_teacher_prompt(question: str) -> str:
         "Now solve this problem:\n"
         f"{question}"
     )
+
+
+def build_strategy_student_prompt(question: str) -> str:
+    strategy_bullets = "\n".join(f"- {s}" for s in STRATEGIES)
+
+    return (
+        "Solve the math word problem correctly.\n\n"
+        "Allowed strategy labels:\n"
+        f"{strategy_bullets}\n\n"
+        "Output exactly one <final> block in this format:\n"
+        "<final>\n"
+        "<strategy>one_allowed_label</strategy>\n"
+        "<reasoning>concise reasoning, at most 3 sentences</reasoning>\n"
+        "<answer>numeric_answer_only</answer>\n"
+        "</final>\n\n"
+        "Rules:\n"
+        "- Inside <strategy>, write exactly one allowed strategy label.\n"
+        "- Inside <reasoning>, explain briefly without XML-style tags.\n"
+        "- Inside <answer>, write only the final numeric answer.\n"
+        "- End immediately after </final>.\n\n"
+        "Problem:\n"
+        f"{question}"
+    )
