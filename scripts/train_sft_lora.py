@@ -136,6 +136,38 @@ def parse_args():
     return parser.parse_args()
 
 
+def check_torchao_compatibility():
+    """Fail early with a clear message when Colab has an old torchao package.
+
+    PEFT can detect torchao and route through its dispatcher. Older Colab
+    torchao builds are not supported by recent PEFT, even though this script
+    does not need torchao for ordinary LoRA training.
+    """
+    import importlib.metadata
+
+    try:
+        version = importlib.metadata.version("torchao")
+    except importlib.metadata.PackageNotFoundError:
+        return
+
+    parts = []
+    for chunk in version.split(".")[:3]:
+        try:
+            parts.append(int(chunk))
+        except ValueError:
+            parts.append(0)
+
+    while len(parts) < 3:
+        parts.append(0)
+
+    if tuple(parts) < (0, 16, 0):
+        raise ImportError(
+            f"Found torchao {version}, but PEFT requires torchao >= 0.16.0 "
+            "when torchao is installed. This project does not need torchao for "
+            "LoRA SFT, so run: python -m pip uninstall -y torchao"
+        )
+
+
 def main():
     args = parse_args()
 
@@ -143,6 +175,8 @@ def main():
     from datasets import Dataset
     from peft import LoraConfig, TaskType, get_peft_model
     from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer
+
+    check_torchao_compatibility()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
     if tokenizer.pad_token_id is None:
