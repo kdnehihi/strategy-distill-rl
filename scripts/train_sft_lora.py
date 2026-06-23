@@ -151,12 +151,11 @@ def main():
     dtype = torch.float16 if torch.cuda.is_available() else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        device_map="auto" if torch.cuda.is_available() else None,
         torch_dtype=dtype,
         trust_remote_code=True,
     )
-    if not torch.cuda.is_available():
-        model.to("cpu")
+    model.to("cuda" if torch.cuda.is_available() else "cpu")
+    model.config.use_cache = False
 
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
