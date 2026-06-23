@@ -75,6 +75,11 @@ python scripts/evaluate_student.py \
   --metrics-path runs/eval/qwen25_math_1p5b_zero_shot_metrics.json
 ```
 
+The evaluator reports strict `accuracy`, `format_valid_rate`, and
+`usable_rate`. It also reports diagnostic `loose_math_accuracy`, which extracts
+a best-effort numeric answer from raw model text for zero-shot analysis only.
+Use `usable_rate` as the main pipeline metric.
+
 Build SFT files from usable teacher traces:
 
 ```bash
