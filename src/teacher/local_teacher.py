@@ -100,6 +100,8 @@ def generate_teacher_outputs_hf(
     prompts,
     max_new_tokens: int = 512,
     temperature: float = 0.0,
+    top_p: float = 1.0,
+    num_return_sequences: int = 1,
 ):
     """Generate teacher responses for a batch using Hugging Face Transformers."""
     import torch
@@ -117,11 +119,13 @@ def generate_teacher_outputs_hf(
     generation_kwargs = {
         "max_new_tokens": max_new_tokens,
         "do_sample": do_sample,
+        "num_return_sequences": num_return_sequences,
         "pad_token_id": tokenizer.pad_token_id,
         "eos_token_id": tokenizer.eos_token_id,
     }
     if do_sample:
         generation_kwargs["temperature"] = temperature
+        generation_kwargs["top_p"] = top_p
 
     with torch.no_grad():
         outputs = model.generate(**inputs, **generation_kwargs)
@@ -139,6 +143,8 @@ def generate_teacher_outputs_vllm(
     prompts,
     max_new_tokens: int = 512,
     temperature: float = 0.0,
+    top_p: float = 1.0,
+    n: int = 1,
 ):
     """Generate teacher responses for a batch using vLLM."""
     from vllm import SamplingParams
@@ -146,10 +152,18 @@ def generate_teacher_outputs_vllm(
     formatted_prompts = format_prompts_for_model(tokenizer, prompts)
     sampling_params = SamplingParams(
         temperature=temperature,
+        top_p=top_p,
         max_tokens=max_new_tokens,
+        n=n,
     )
     outputs = llm.generate(formatted_prompts, sampling_params)
-    return [output.outputs[0].text.strip() for output in outputs]
+    if n == 1:
+        return [output.outputs[0].text.strip() for output in outputs]
+
+    return [
+        [completion.text.strip() for completion in output.outputs]
+        for output in outputs
+    ]
 
 
 def generate_teacher_output(

@@ -114,6 +114,30 @@ The same workflow is available as a notebook:
 
 - `notebooks/03_student_sft_experiments.ipynb`
 
+## RLVR Rollout Generation
+
+After choosing an SFT adapter, generate multiple sampled answers per GSM8K
+prompt before implementing DAPO/RLVR training:
+
+```bash
+python scripts/generate_rl_rollouts.py \
+  --model-name Qwen/Qwen2.5-Math-1.5B-Instruct \
+  --adapter-path checkpoints/student_sft/balanced_r16_a32_4000 \
+  --input-path data/gsm8k_clean_train.jsonl \
+  --output-path data/rl_rollouts_debug.jsonl \
+  --num-samples 50 \
+  --num-generations 4 \
+  --batch-size 4 \
+  --temperature 0.7 \
+  --top-p 0.9 \
+  --max-new-tokens 512
+```
+
+Each output group keeps the question, ground truth, prompt, sampled outputs,
+parsed answers, strict format checks, correctness flags, and a simple reward.
+Start with 4 generations per prompt for debugging, then increase to 8 once the
+rollout quality and runtime look reasonable.
+
 ## Current Scope
 
 This repository currently contains the Week 1 data scaffold, teacher trace generation, teacher validation, zero-shot student evaluation, and lightweight LoRA SFT. It does not include GRPO/RLVR training or complex abstractions.
