@@ -152,6 +152,15 @@ python scripts/generate_rl_rollouts.py \
   --max-new-tokens 512
 ```
 
+Before RL training, existing rollout files can be rescored without regenerating
+model outputs:
+
+```bash
+python scripts/rescore_rl_rollouts.py \
+  --input-path data/rl_rollouts_1p5b_sft_g8.jsonl \
+  --output-path data/rl_rollouts_1p5b_sft_g8_target_reward.jsonl
+```
+
 Train DAPO-style RLVR:
 
 ```bash
@@ -159,7 +168,7 @@ python scripts/train_dapo.py \
   --model-name Qwen/Qwen2.5-Math-1.5B-Instruct \
   --adapter-path checkpoints/student_sft/balanced_r16_a32_4000 \
   --reference-adapter-path checkpoints/student_sft/balanced_r16_a32_4000 \
-  --rollout-path data/rl_rollouts_1p5b_sft_g8.jsonl \
+  --rollout-path data/rl_rollouts_1p5b_sft_g8_target_reward.jsonl \
   --output-dir checkpoints/student_dapo/dapo_1p5b_g8_lr5e7_e1 \
   --max-groups 100000 \
   --batch-size 1 \
@@ -170,6 +179,24 @@ python scripts/train_dapo.py \
   --max-length 1024
 ```
 
+The current reward is intentionally interpretable:
+
+```text
+reward =
+  1.0 * correctness_reward
+  + 0.1 * format_reward
+  + 0.2 * target_quantity_reward
+  - 0.2 * unit_mismatch_penalty
+```
+
+`target_quantity_reward` and `unit_mismatch_penalty` are lightweight heuristics
+based on the question and response text. They look for whether the output
+addresses the asked quantity or unit, such as spent money, remaining amount,
+profit, per-year/per-month rates, seconds/minutes/hours, miles/meters, totals,
+and differences. This does not replace exact-match reward; it only adds a small
+signal to reduce regressions where the model answers the wrong quantity in the
+right format.
+
 Train a GRPO-style baseline on the same rollouts:
 
 ```bash
@@ -177,7 +204,7 @@ python scripts/train_grpo.py \
   --model-name Qwen/Qwen2.5-Math-1.5B-Instruct \
   --adapter-path checkpoints/student_sft/balanced_r16_a32_4000 \
   --reference-adapter-path checkpoints/student_sft/balanced_r16_a32_4000 \
-  --rollout-path data/rl_rollouts_1p5b_sft_g8.jsonl \
+  --rollout-path data/rl_rollouts_1p5b_sft_g8_target_reward.jsonl \
   --output-dir checkpoints/student_grpo/grpo_1p5b_g8_lr5e7_e1 \
   --max-groups 100000 \
   --batch-size 1 \
@@ -300,6 +327,7 @@ For this project, the 1.5B setting is more valuable:
 | Off-by-one break-even errors | Exact-match reward cannot explain strict "starts earning" vs "breaks even". | Add a reasoning verifier or rubric reward for inequality semantics. |
 | Direction/remaining-distance error | Model computes total traveled instead of distance remaining. | Add more working-backward and remaining-distance examples. |
 | Long reasoning still wrong | Format is correct, but internal logic has a hidden semantic error. | Add process-level reward, LLM-as-judge scoring, or symbolic checks for selected templates. |
+| Wrong target quantity or unit | Model gives a plausible number for a different asked quantity, such as monthly instead of yearly or remaining amount instead of spent amount. | Use the target-quantity reward heuristic and later replace it with a stronger verifier or judge. |
 
 ## Future Improvements
 

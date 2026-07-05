@@ -11,6 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from scripts.evaluate_student import load_student_model
 from scripts.train_sft_lora import ensure_torchao_compatibility
 from src.student.evaluation import build_student_eval_record
+from src.student.rewards import score_student_output
 from src.teacher.local_teacher import (
     generate_teacher_outputs_hf,
     generate_teacher_outputs_vllm,
@@ -42,22 +43,14 @@ def batched(items, batch_size):
 
 
 def score_rollout(eval_record):
-    """Simple RLVR reward for rollout debugging.
+    """Deprecated compatibility wrapper.
 
-    Keep this intentionally small and interpretable before implementing DAPO:
-    correctness dominates, with a small format bonus/penalty.
+    New reward scoring needs the original example/question, so build rollout
+    records call src.student.rewards.score_student_output directly.
     """
     if eval_record["is_correct"]:
-        reward = 1.0
-    else:
-        reward = 0.0
-
-    if eval_record["is_format_valid"]:
-        reward += 0.1
-    else:
-        reward -= 0.2
-
-    return round(reward, 4)
+        return 1.1 if eval_record["is_format_valid"] else 0.8
+    return 0.1 if eval_record["is_format_valid"] else -0.2
 
 
 def build_rollout_record(example, raw_outputs):
@@ -66,6 +59,7 @@ def build_rollout_record(example, raw_outputs):
 
     for generation_index, raw_output in enumerate(raw_outputs):
         eval_record = build_student_eval_record(example, raw_output)
+        reward, reward_parts = score_student_output(example, eval_record)
         outputs.append(
             {
                 "generation_index": generation_index,
@@ -80,7 +74,8 @@ def build_rollout_record(example, raw_outputs):
                 "is_format_valid": eval_record["is_format_valid"],
                 "is_usable": eval_record["is_usable"],
                 "format_checks": eval_record["format_checks"],
-                "reward": score_rollout(eval_record),
+                "reward": reward,
+                "reward_parts": reward_parts,
             }
         )
 
