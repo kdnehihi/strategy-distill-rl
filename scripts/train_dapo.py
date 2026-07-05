@@ -182,13 +182,22 @@ def build_training_samples(groups: list[dict], tokenizer, max_length: int):
     return samples
 
 
+def get_model_input_device(model):
+    """Return the device expected by the model input embeddings."""
+    return model.get_input_embeddings().weight.device
+
+
 def compute_token_logprobs(model, input_ids, attention_mask):
+    input_device = get_model_input_device(model)
+    input_ids = input_ids.to(input_device)
+    attention_mask = attention_mask.to(input_device)
+
     outputs = model(input_ids=input_ids, attention_mask=attention_mask)
     logits = outputs.logits
 
     # Token at position t predicts the label at position t+1.
     shift_logits = logits[:, :-1, :]
-    shift_labels = input_ids[:, 1:]
+    shift_labels = input_ids[:, 1:].to(shift_logits.device)
 
     logprobs = F.log_softmax(shift_logits, dim=-1)
     token_logprobs = logprobs.gather(
@@ -207,7 +216,8 @@ def dapo_loss(
     clip_low: float,
     clip_high: float,
 ):
-    shifted_response_mask = response_mask[:, 1:]
+    old_logprobs = old_logprobs.to(new_logprobs.device)
+    shifted_response_mask = response_mask[:, 1:].to(new_logprobs.device)
     ratio = torch.exp(new_logprobs - old_logprobs)
     clipped_ratio = torch.clamp(
         ratio,
@@ -215,7 +225,7 @@ def dapo_loss(
         max=1.0 + clip_high,
     )
 
-    advantages = advantages.view(-1, 1)
+    advantages = advantages.to(new_logprobs.device).view(-1, 1)
     unclipped = ratio * advantages
     clipped = clipped_ratio * advantages
 
@@ -270,7 +280,8 @@ def main():
         args.adapter_path,
         trainable=True,
     )
-    device = next(policy_model.parameters()).device
+    input_device = get_model_input_device(policy_model)
+    print(f"Policy input device: {input_device}")
     print(f"Trainable parameters: {trainable_parameter_count(policy_model):,}")
 
     reference_model = None
@@ -326,7 +337,6 @@ def main():
         ):
             batch_samples = samples[start : start + args.batch_size]
             batch = collate_features(batch_samples, tokenizer)
-            batch = {key: value.to(device) for key, value in batch.items()}
 
             old_model = policy_model if args.no_reference_model else reference_model
             with torch.no_grad():
