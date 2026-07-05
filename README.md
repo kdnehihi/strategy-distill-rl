@@ -1,6 +1,26 @@
 # Strategy-Distill-RL
 
-Strategy-Distill-RL is a small machine learning research project for studying strategy-level distillation and GRPO/RLVR for small LLM mathematical reasoning.
+Strategy-Distill-RL is a small machine learning research project for studying
+strategy-level distillation and RLVR for small LLM mathematical reasoning.
+
+The core question is:
+
+> Can a small math LLM learn a stable structured reasoning format from teacher
+> traces, then improve answer correctness with RLVR without losing that format?
+
+The current project focuses on GSM8K with Qwen2.5-Math students. Teacher traces
+are used to teach a structured output schema:
+
+```xml
+<final>
+<strategy>...</strategy>
+<reasoning>...</reasoning>
+<answer>...</answer>
+</final>
+```
+
+The main result so far is that DAPO-style RLVR improves the 1.5B SFT student
+while preserving the structured output format.
 
 ## Week 1 Goal
 
@@ -114,38 +134,234 @@ The same workflow is available as a notebook:
 
 - `notebooks/03_student_sft_experiments.ipynb`
 
-## RLVR Rollout Generation
+## DAPO and GRPO RLVR
 
-After choosing an SFT adapter, generate multiple sampled answers per GSM8K
-prompt before implementing DAPO/RLVR training:
+Generate rollouts from the SFT student:
 
 ```bash
 python scripts/generate_rl_rollouts.py \
   --model-name Qwen/Qwen2.5-Math-1.5B-Instruct \
   --adapter-path checkpoints/student_sft/balanced_r16_a32_4000 \
   --input-path data/gsm8k_clean_train.jsonl \
-  --output-path data/rl_rollouts_debug.jsonl \
-  --num-samples 50 \
-  --num-generations 4 \
+  --output-path data/rl_rollouts_1p5b_sft_g8.jsonl \
+  --num-samples -1 \
+  --num-generations 8 \
   --batch-size 4 \
   --temperature 0.7 \
   --top-p 0.9 \
   --max-new-tokens 512
 ```
 
-Each output group keeps the question, ground truth, prompt, sampled outputs,
-parsed answers, strict format checks, correctness flags, and a simple reward.
-Start with 4 generations per prompt for debugging, then increase to 8 once the
-rollout quality and runtime look reasonable.
+Train DAPO-style RLVR:
+
+```bash
+python scripts/train_dapo.py \
+  --model-name Qwen/Qwen2.5-Math-1.5B-Instruct \
+  --adapter-path checkpoints/student_sft/balanced_r16_a32_4000 \
+  --reference-adapter-path checkpoints/student_sft/balanced_r16_a32_4000 \
+  --rollout-path data/rl_rollouts_1p5b_sft_g8.jsonl \
+  --output-dir checkpoints/student_dapo/dapo_1p5b_g8_lr5e7_e1 \
+  --max-groups 100000 \
+  --batch-size 1 \
+  --epochs 1 \
+  --learning-rate 5e-7 \
+  --clip-low 0.2 \
+  --clip-high 0.28 \
+  --max-length 1024
+```
+
+Train a GRPO-style baseline on the same rollouts:
+
+```bash
+python scripts/train_grpo.py \
+  --model-name Qwen/Qwen2.5-Math-1.5B-Instruct \
+  --adapter-path checkpoints/student_sft/balanced_r16_a32_4000 \
+  --reference-adapter-path checkpoints/student_sft/balanced_r16_a32_4000 \
+  --rollout-path data/rl_rollouts_1p5b_sft_g8.jsonl \
+  --output-dir checkpoints/student_grpo/grpo_1p5b_g8_lr5e7_e1 \
+  --max-groups 100000 \
+  --batch-size 1 \
+  --epochs 1 \
+  --learning-rate 5e-7 \
+  --clip-epsilon 0.2 \
+  --max-length 1024
+```
+
+Notebook entry points:
+
+- `notebooks/04_dapo_training.ipynb`: 1.5B DAPO training from SFT rollouts.
+- `notebooks/06_evaluate_dapo_checkpoint.ipynb`: restore a DAPO checkpoint,
+  evaluate it, and run paired error analysis.
+- `notebooks/07_grpo_training.ipynb`: train GRPO on the same rollout data and
+  compare SFT vs DAPO vs GRPO.
+
+## Current Results
+
+Full GSM8K test set has 1,319 examples. Metrics below use the same local
+evaluator and strict structured-output parser.
+
+| Model | Stage | Accuracy | Loose Math Accuracy | Format Valid | Usable |
+|---|---:|---:|---:|---:|---:|
+| Qwen2.5-Math-1.5B | SFT | 70.28% | 70.36% | 99.47% | 70.28% |
+| Qwen2.5-Math-1.5B | DAPO, 8 rollouts | 74.22% | 74.45% | 99.39% | 74.22% |
+| Qwen2.5-Math-7B | Zero-shot | 0.00% strict | 40.41% loose | 0.00% | 0.00% |
+| Qwen2.5-Math-7B | SFT | 82.64% | 82.64% | 99.70% | 82.64% |
+
+The 1.5B DAPO checkpoint improved over the 1.5B SFT checkpoint by:
+
+- `+52` net correct answers on GSM8K test.
+- `87` SFT-wrong examples fixed by DAPO.
+- `35` SFT-correct examples regressed by DAPO.
+- Structured output validity remained above `99%`.
+
+This suggests that SFT established the output format as a stable policy prior,
+while DAPO improved answer correctness inside that learned format.
+
+## Observations
+
+### 1. SFT Learns the Output Manifold
+
+Zero-shot models often solve some math but do not follow the required XML-like
+schema. After SFT, the student reliably produces:
+
+```xml
+<final>
+<strategy>...</strategy>
+<reasoning>...</reasoning>
+<answer>...</answer>
+</final>
+```
+
+This matters because DAPO does not explicitly train a separate format loss. It
+works on sampled model outputs. If SFT did not already make the format stable,
+RLVR would waste reward signal on formatting instead of math reasoning.
+
+### 2. DAPO Improves Correctness Without Breaking Format
+
+The DAPO reward is answer-centric, but format validity stayed above `99%`.
+That is a useful finding:
+
+> SFT creates a stable structured-output prior; DAPO adjusts answer correctness
+> while mostly staying within that prior.
+
+This is the main reason the project uses an SFT -> RLVR pipeline instead of
+jumping directly into RL.
+
+### 3. More Rollouts Are Not Automatically Better
+
+Increasing rollouts from 4 to 8 gave only a small final accuracy improvement.
+The main bottleneck is not just the number of sampled outputs. Useful RL signal
+comes from groups where the same question has mixed rewards: at least one good
+and one bad rollout. If all rollouts are correct or all are wrong, group-relative
+advantages carry little learning signal.
+
+### 4. Remaining Errors Are Semantic, Not Formatting Errors
+
+Most DAPO errors still have valid XML tags and numeric answers. The remaining
+failures are usually reasoning failures:
+
+- Wrong percentage base.
+- Missing multiplicative factor.
+- Confusing a choice with a sum.
+- Direction or remaining-distance mistakes.
+- Off-by-one or strict-inequality cases.
+- Incorrect reverse equation setup.
+- Mixture/proportional reasoning errors.
+
+Example pattern:
+
+```text
+Question asks for the better of two investment choices.
+Model computes both profits correctly but adds them together.
+```
+
+This shows that RLVR improved selection among existing behaviors, but did not
+fully solve deeper semantic interpretation.
+
+### 5. 7B Is Useful as a Scale-Up Ablation, Not the Main Story
+
+Qwen2.5-Math-7B SFT performs much better than 1.5B SFT, but DAPO training for
+7B was not compute-efficient in the current Colab setup. The model required
+CPU/GPU offloading and training steps became prohibitively slow.
+
+For this project, the 1.5B setting is more valuable:
+
+- It is small enough for affordable iteration.
+- It has enough errors for RLVR gains to be visible.
+- It better demonstrates the role of distillation and DAPO.
+
+## Failure Modes and Possible Fixes
+
+| Failure Mode | Why It Happens | Possible Fix |
+|---|---|---|
+| Wrong percentage base | Reward only checks final answer, not whether the base quantity was selected correctly. | Add targeted teacher data or verifier checks for percent-base problems. |
+| Missing repeated factor | Model reads one event but ignores frequency such as "3 times a week". | Add error-tagged examples and evaluate by question type. |
+| Choice vs sum confusion | Model computes all options and aggregates instead of selecting max/min. | Add strategy-specific reward or prompt constraints for comparison problems. |
+| Off-by-one break-even errors | Exact-match reward cannot explain strict "starts earning" vs "breaks even". | Add a reasoning verifier or rubric reward for inequality semantics. |
+| Direction/remaining-distance error | Model computes total traveled instead of distance remaining. | Add more working-backward and remaining-distance examples. |
+| Long reasoning still wrong | Format is correct, but internal logic has a hidden semantic error. | Add process-level reward, LLM-as-judge scoring, or symbolic checks for selected templates. |
+
+## Future Improvements
+
+1. **Question-type error analysis**
+   Add lightweight classifiers for error types such as percentage, rate, mixture,
+   comparison, reverse reasoning, and remaining-distance problems.
+
+2. **Hybrid reward**
+   Combine exact-match reward with small process rewards:
+   - valid format
+   - allowed strategy
+   - answer only numeric
+   - no text after `</final>`
+   - optional LLM judge score for reasoning consistency
+
+3. **LLM-as-a-judge reward**
+   Use a judge model to score reasoning quality, especially for unlabeled or
+   hard-to-verify data. This would complement the current verifiable GSM8K
+   reward rather than replace it immediately.
+
+4. **Better rollout filtering**
+   Keep only groups with reward variance and inspect the distribution of
+   correct/incorrect samples per prompt before RL training.
+
+5. **DAPO vs GRPO comparison**
+   Train GRPO with the same SFT checkpoint, rollout data, and evaluation script.
+   Compare:
+   - final accuracy
+   - format validity
+   - paired fixes/regressions
+   - cost per improvement
+
+6. **Report-ready artifacts**
+   Save all experiment metrics to CSV/JSON and write a final report with:
+   - SFT vs DAPO metrics
+   - paired comparison
+   - rollout variance statistics
+   - representative fixes and regressions
+   - cost/compute notes
 
 ## Current Scope
 
-This repository currently contains the Week 1 data scaffold, teacher trace generation, teacher validation, zero-shot student evaluation, and lightweight LoRA SFT. It does not include GRPO/RLVR training or complex abstractions.
+This repository currently contains:
+
+- GSM8K data preparation.
+- Teacher trace generation and validation.
+- Structured prompt/parsing utilities.
+- Student zero-shot and adapter evaluation.
+- LoRA SFT training.
+- RL rollout generation.
+- Offline DAPO-style RLVR training.
+- Offline GRPO-style comparison training.
+- DAPO checkpoint evaluation and paired error analysis.
+
+It intentionally avoids complicated abstractions so that each research step is
+easy to inspect and modify.
 
 ## Future Stages
 
-1. Teacher trace generation
-2. Normal distillation
-3. Strategy distillation
-4. GRPO/RLVR training
-5. Evaluation on GSM8K and SVAMP
+1. Final experiment report with tables and representative cases.
+2. Question-type and failure-mode analysis.
+3. GRPO comparison against the current DAPO checkpoint.
+4. Hybrid exact-match plus reasoning-quality reward.
+5. Optional LLM-as-a-judge reward experiments.
+6. Evaluation on SVAMP or another out-of-distribution math set.
